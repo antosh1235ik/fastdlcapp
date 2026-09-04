@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Optional
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 app = FastAPI()
 
@@ -22,25 +22,29 @@ conn = sqlite3.connect("fastdlc.db", check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute(
-    "CREATE TABLE IF NOT EXISTS users ("
-    "login TEXT PRIMARY KEY, "
-    "password_hash TEXT, "
-    "sub TEXT DEFAULT 'Нет подписки', "
-    "sub_exp TEXT DEFAULT '—', "
-    "hwid TEXT DEFAULT 'Не привязан', "
-    "avatar TEXT DEFAULT ''"
-    ")"
+    """
+    CREATE TABLE IF NOT EXISTS users (
+        login TEXT PRIMARY KEY,
+        password_hash TEXT,
+        sub TEXT DEFAULT 'Нет подписки',
+        sub_exp TEXT DEFAULT '—',
+        hwid TEXT DEFAULT 'Не привязан',
+        avatar TEXT DEFAULT ''
+    )
+    """
 )
 
 cursor.execute(
-    "CREATE TABLE IF NOT EXISTS chat ("
-    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-    "login TEXT, "
-    "avatar TEXT, "
-    "sub TEXT, "
-    "text TEXT, "
-    "time TEXT"
-    ")"
+    """
+    CREATE TABLE IF NOT EXISTS chat (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        login TEXT,
+        avatar TEXT,
+        sub TEXT,
+        text TEXT,
+        time TEXT
+    )
+    """
 )
 conn.commit()
 
