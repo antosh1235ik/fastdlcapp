@@ -1,89 +1,141 @@
+import os
 import sqlite3
-from typing import List
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+import hashlib
+from datetime import datetime
+from typing import Optional
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from passlib.context import CryptContext
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[],
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=[],
-    allow_headers=[],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-pwd_context = CryptContext(schemes=[bcrypt], deprecated=auto)
-
-# Инициализация базы данных SQLite
-conn = sqlite3.connect(fastdlc.db, check_same_thread=False)
+# Инициализация базы данных
+conn = sqlite3.connect("fastdlc.db", check_same_thread=False)
 cursor = conn.cursor()
+
 cursor.execute(
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL
+    "CREATE TABLE IF NOT EXISTS users ("
+    "login TEXT PRIMARY KEY, "
+    "password_hash TEXT, "
+    "sub TEXT DEFAULT 'Нет подписки', "
+    "sub_exp TEXT DEFAULT '—', "
+    "hwid TEXT DEFAULT 'Не привязан', "
+    "avatar TEXT DEFAULT ''"
+    ")"
 )
+
+cursor.execute(
+    "CREATE TABLE IF NOT EXISTS chat ("
+    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+    "login TEXT, "
+    "avatar TEXT, "
+    "sub TEXT, "
+    "text TEXT, "
+    "time TEXT"
+    ")"
 )
 conn.commit()
 
-class UserAuth(BaseModel)
-    username str
-    password str
+def hash_pw(pw: str) -> str:
+    return hashlib.sha256(pw.encode()).hexdigest()
 
-@app.post(register)
-def register(user UserAuth)
-    username = user.username.strip()
-    if len(username)  3 or len(user.password)  4
-        raise HTTPException(status_code=400, detail=Слишком короткий логин или пароль)
-    
-    hashed = pwd_context.hash(user.password)
-    try
-        cursor.execute(INSERT INTO users (username, password_hash) VALUES (, ), (username, hashed))
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "FastDLC Backend"}
+
+class AuthModel(BaseModel):
+    login: str
+    password: str
+    action: str
+    initData: Optional[str] = ""
+
+@app.post("/api/auth")
+def api_auth(data: AuthModel):
+    login = data.login.strip()
+    pw_hash = hash_pw(data.password)
+
+    if data.action == "register":
+        cursor.execute("SELECT login FROM users WHERE login = ?", (login,))
+        if cursor.fetchone():
+            return {"ok": False, "error": "Логин уже занят!"}
+        
+        cursor.execute(
+            "INSERT INTO users (login, password_hash, hwid) VALUES (?, ?, ?)",
+            (login, pw_hash, "HWID-" + os.urandom(4).hex().upper())
+        )
         conn.commit()
-        return {status ok, username username}
-    except sqlite3.IntegrityError
-        raise HTTPException(status_code=400, detail=Пользователь с таким ником уже существует)
 
-@app.post(login)
-def login(user UserAuth)
-    username = user.username.strip()
-    cursor.execute(SELECT password_hash FROM users WHERE username = , (username,))
-    row = cursor.fetchone()
-    if not row or not pwd_context.verify(user.password, row[0])
-        raise HTTPException(status_code=400, detail=Неверный логин или пароль)
-    return {status ok, username username}
+    cursor.execute("SELECT login, sub, sub_exp, hwid, avatar, password_hash FROM users WHERE login = ?", (login,))
+    user = cursor.fetchone()
+    if not user or user[5] != pw_hash:
+        return {"ok": False, "error": "Неверный логин или пароль!"}
 
-# Менеджер WebSockets для общего чата
-class ConnectionManager
-    def __init__(self)
-        self.active_connections List[WebSocket] = []
+    return {
+        "ok": True,
+        "profile": {
+            "login": user[0],
+            "sub": user[1],
+            "sub_exp": user[2],
+            "hwid": user[3],
+            "avatar": user[4]
+        }
+    }
 
-    async def connect(self, websocket WebSocket)
-        await websocket.accept()
-        self.active_connections.append(websocket)
+@app.get("/api/chat")
+def get_chat():
+    cursor.execute("SELECT login, avatar, sub, text, time FROM chat ORDER BY id DESC LIMIT 50")
+    rows = cursor.fetchall()
+    msgs = [{"login": r[0], "avatar": r[1], "sub": r[2], "text": r[3], "time": r[4]} for r in reversed(rows)]
+    return {"ok": True, "messages": msgs}
 
-    def disconnect(self, websocket WebSocket)
-        if websocket in self.active_connections
-            self.active_connections.remove(websocket)
+class ChatMsg(BaseModel):
+    login: str
+    avatar: Optional[str] = ""
+    sub: Optional[str] = "Гость"
+    text: str
 
-    async def broadcast(self, message str)
-        for connection in self.active_connections
-            try
-                await connection.send_text(message)
-            except Exception
-                pass
+@app.post("/api/chat")
+def post_chat(msg: ChatMsg):
+    time_str = datetime.now().strftime("%H:%M")
+    cursor.execute(
+        "INSERT INTO chat (login, avatar, sub, text, time) VALUES (?, ?, ?, ?, ?)",
+        (msg.login, msg.avatar, msg.sub, msg.text, time_str)
+    )
+    conn.commit()
+    return {"ok": True}
 
-manager = ConnectionManager()
+class KeyModel(BaseModel):
+    login: str
+    key: str
 
-@app.websocket(wschat)
-async def websocket_endpoint(websocket WebSocket)
-    await manager.connect(websocket)
-    try
-        while True
-            data = await websocket.receive_text()
-            await manager.broadcast(data)
-    except WebSocketDisconnect
-        manager.disconnect(websocket)
+@app.post("/api/activate_key")
+def activate_key(data: KeyModel):
+    return {"ok": True, "sub": "Навсегда (Lifetime)", "sub_exp": "Бессрочно"}
+
+class ResetHwid(BaseModel):
+    login: str
+
+@app.post("/api/reset_hwid")
+def reset_hwid(data: ResetHwid):
+    new_hwid = "HWID-" + os.urandom(4).hex().upper()
+    cursor.execute("UPDATE users SET hwid = ? WHERE login = ?", (new_hwid, data.login))
+    conn.commit()
+    return {"ok": True, "hwid": new_hwid}
+
+class AvatarModel(BaseModel):
+    login: str
+    avatar: str
+
+@app.post("/api/update_avatar")
+def update_avatar(data: AvatarModel):
+    cursor.execute("UPDATE users SET avatar = ? WHERE login = ?", (data.avatar, data.login))
+    conn.commit()
+    return {"ok": True}
